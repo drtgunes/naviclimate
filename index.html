@@ -372,6 +372,9 @@ header.brand + .sec{margin-top:-6px}
 .row.stopbtns .btn.primary{width:auto;padding:12px 10px;font-size:18px}
 .mapsearch.pulse .field{animation:msPulse 1.2s ease-out}
 @keyframes msPulse{0%{box-shadow:0 0 0 0 rgba(26,115,232,.7)}100%{box-shadow:0 0 0 14px rgba(26,115,232,0)}}
+.altpin{display:flex;flex-direction:column;align-items:center;transform:translate(-50%,-50%);padding:6px 10px;border-radius:12px;border:2px solid #7d8796;background:#fff;color:#1d2433;font:700 15px/1.1 var(--f-display,system-ui);box-shadow:0 2px 8px rgba(0,0,0,.25);cursor:pointer;white-space:nowrap}
+.altpin small{font:600 12px/1.2 system-ui;color:#5b6474}
+[data-theme="dark"] .altpin{background:#1f2633;color:#eef2f8;border-color:#8d97a8}
 #toast{position:absolute;z-index:1100;left:50%;transform:translateX(-50%);top:calc(14px + env(safe-area-inset-top,0px));background:var(--ink);color:var(--surface);
   padding:9px 14px;border-radius:8px;font-size:14px;box-shadow:var(--shadow);max-width:calc(100% - 24px)}
 
@@ -513,7 +516,7 @@ body.riding .maplibregl-ctrl-top-left,body.riding .maplibregl-ctrl-bottom-right,
       </div>
     </section>
 
-    <p class="foot">Harita: OpenFreeMap, © OpenMapTiles, © OpenStreetMap katkıcıları · Hız kameraları: OpenStreetMap · Rota: OSRM · Hava: Open-Meteo. Tahminler saatliktir; varış saatleri tahmini sürüş hızına dayanır. · <b>Sürüm 33</b></p>
+    <p class="foot">Harita: OpenFreeMap, © OpenMapTiles, © OpenStreetMap katkıcıları · Hız kameraları: OpenStreetMap · Rota: OSRM · Hava: Open-Meteo. Tahminler saatliktir; varış saatleri tahmini sürüş hızına dayanır. · <b>Sürüm 34</b></p>
   </aside>
 
   <main id="mapwrap">
@@ -556,7 +559,7 @@ body.riding .maplibregl-ctrl-top-left,body.riding .maplibregl-ctrl-bottom-right,
           </div>
           <div class="hud-sub"><span id="hudDelay">GPS sinyali bekleniyor…</span><span id="hudGps"></span></div>
           <div class="hud-next" id="hudNext" hidden></div>
-          <div class="hud-attr">© OpenFreeMap · © OpenMapTiles · © OpenStreetMap · v33</div>
+          <div class="hud-attr">© OpenFreeMap · © OpenMapTiles · © OpenStreetMap · v34</div>
         </div>
         <div class="hud-actions">
           <button class="fab orient" type="button" id="btnOrient" hidden>3D</button>
@@ -919,7 +922,7 @@ async function placeAt(lat, lon, mode){
   const n=await reverseName(p.lat,p.lon); p.name=n||`${p.lat.toFixed(3)}, ${p.lon.toFixed(3)}`;
   renderStops(); renderMarkers(); save();
 }
-map.on("click", e => { if(ride.active) return; live.follow=false; placeAt(e.lngLat.lat, e.lngLat.lng, state.mode); });
+map.on("click", e => { if(ride.active) return; const ak=altAt(e.point); if(ak>=0){ selectAlt(ak); return; } live.follow=false; placeAt(e.lngLat.lat, e.lngLat.lng, state.mode); });
 
 const phoneUI=()=>innerWidth<=900 && matchMedia("(pointer:coarse)").matches;
 /* telefonda: klavye açılınca sayfa kaymasın diye yazma, ekranın üstündeki harita arama kutusunda yapılır */
@@ -1044,8 +1047,8 @@ function ttParams(key, start){
   if(start && start.getTime()>Date.now()+10*60000) q.set("departAt", start.toISOString().replace(/\.\d+Z$/,"Z"));
   return q;
 }
-function parseTomTom(r){
-  const rt=r?.routes?.[0]; if(!rt) throw new Error("Rota bulunamadı");
+function parseTomTom(r, k=0){
+  const rt=r?.routes?.[k]; if(!rt) throw new Error("Rota bulunamadı");
   const coords=[], legStarts=[]; (rt.legs||[]).forEach(l=>{ legStarts.push(coords.length); (l.points||[]).forEach(p=>coords.push([p.latitude,p.longitude])); });
   if(coords.length<2) throw new Error("Rota bulunamadı");
   const n=coords.length-1, segD=[];
@@ -1067,10 +1070,15 @@ function parseTomTom(r){
     speed:s.effectiveSpeedInKmh||null, cat:s.simpleCategory||""}));
   return {provider:"tomtom", coords, segD, segT, steps, traffic, summary:rt.summary||{}, legStarts};
 }
-async function routeTomTom(stops, key, start){
+async function routeTomTom(stops, key, start, alts){
   const loc=stops.map(p=>`${(+p.lat).toFixed(6)},${(+p.lon).toFixed(6)}`).join(":");
-  const r=await fetchJSON(`https://api.tomtom.com/routing/1/calculateRoute/${loc}/json?${ttParams(key,start)}`,25000);
-  return parseTomTom(r);
+  const q=ttParams(key,start);
+  if(alts && stops.length===2){ q.set("maxAlternatives","2"); q.set("alternativeType","betterRoute"); }
+  const r=await fetchJSON(`https://api.tomtom.com/routing/1/calculateRoute/${loc}/json?${q}`,25000);
+  const main=parseTomTom(r,0);
+  main.alts=[];
+  for(let k=1;k<(r.routes||[]).length;k++){ try{ main.alts.push(parseTomTom(r,k)); }catch{} }
+  return main;
 }
 /* var olan rotanın (destek noktalarıyla) güncel trafiğini sor */
 async function routeTomTomAlong(pts, key){
@@ -1089,7 +1097,7 @@ async function routeOSRM(stops){
   let extra="";
   if(stops.some(p=>p.hint)){
     extra="&continue_straight=true&bearings="+stops.map(p=>p.hint?`${Math.round(p.brg)},40`:"").join(";")
-         +"&radiuses="+stops.map(p=>p.hint?"60":"unlimited").join(";");
+         +"&radiuses="+stops.map(p=>p.hint?"30":"unlimited").join(";");
   }
   const r=await fetchJSON(`https://router.project-osrm.org/route/v1/driving/${coordStr}?overview=full&geometries=geojson&annotations=duration,distance&steps=true${extra}`);
   if(r.code!=="Ok" || !r.routes?.length) throw new Error("Rota bulunamadı");
@@ -1115,19 +1123,40 @@ async function routeOSRM(stops){
   }));
   return {provider:"osrm", coords, segD, segT, steps, traffic:[], summary:{}};
 }
-async function getRoute(stops, start){
+/* OSM çizgisi TomTom'un seçtiği yollardan (ör. otoyol yerine paralel yol) ayrılıyor mu? */
+function followsRoute(osC, ttC){
+  const kx=Math.cos(osC[0][0]*Math.PI/180)*111320, ky=110540;
+  const segDist=(p,a,b)=>{ const ax=(a[1]-p[1])*kx, ay=(a[0]-p[0])*ky, bx=(b[1]-p[1])*kx, by=(b[0]-p[0])*ky, dx=bx-ax, dy=by-ay, L=dx*dx+dy*dy;
+    let t=L>0? -(ax*dx+ay*dy)/L : 0; t=Math.max(0,Math.min(1,t)); return Math.hypot(ax+t*dx, ay+t*dy); };
+  let j=0, off=0, prev=osC[0];
+  for(let i=1;i<osC.length;i++){
+    const p=osC[i], step=hav(prev,p); prev=p;
+    let best=Infinity, bj=j;
+    for(let k=Math.max(0,j-40); k<Math.min(ttC.length-1, j+400); k++){ const d=segDist(p,ttC[k],ttC[k+1]); if(d<best){ best=d; bj=k; } }
+    if(best>2000){ for(let k=0;k<ttC.length-1;k++){ const d=segDist(p,ttC[k],ttC[k+1]); if(d<best){ best=d; bj=k; } } }
+    j=bj;
+    if(best>45){ off+=step; if(off>350) return false; } else off=0;
+  }
+  return true;
+}
+async function hybridOf(stops, tt){
+  // TomTom'un seçtiği yollar boyunca çizgiyi OpenStreetMap'ten al: harita ile birebir örtüşsün
+  try{
+    const os=await routeOSRM(routeHints(stops, tt));
+    const osLen=os.segD.reduce((x,d)=>x+d,0), ttLen=tt.summary?.lengthInMeters || tt.segD.reduce((x,d)=>x+d,0);
+    if(osLen<=ttLen*1.05+800 && followsRoute(os.coords, tt.coords)) return mergeTraffic(os, tt);
+    console.warn("OSM çizgisi TomTom rotasından ayrılıyor, TomTom çizgisi kullanılıyor", osLen, ttLen);
+  }catch(e){ console.warn("OSM çizgisi alınamadı", e); }
+  return tt;
+}
+async function getRoute(stops, start, wantAlts){
   const key=ttKey();
   if(key){
     try{
-      const tt=await routeTomTom(stops, key, start);
-      // TomTom'un seçtiği yollar boyunca çizgiyi OpenStreetMap'ten al: harita ile birebir örtüşsün
-      try{
-        const os=await routeOSRM(routeHints(stops, tt));
-        const osLen=os.segD.reduce((x,d)=>x+d,0), ttLen=tt.summary?.lengthInMeters || tt.segD.reduce((x,d)=>x+d,0);
-        if(osLen<=ttLen*1.12+1500) return mergeTraffic(os, tt);
-        console.warn("OSM çizgisi TomTom rotasından uzun, TomTom çizgisi kullanılıyor", osLen, ttLen);
-      }catch(e){ console.warn("OSM çizgisi alınamadı", e); }
-      return tt;
+      const tt=await routeTomTom(stops, key, start, wantAlts);
+      const RT=await hybridOf(stops, tt);
+      RT.tt=tt; RT.alts=tt.alts||[];
+      return RT;
     }
     catch(e){
       const m=String(e?.message||"");
@@ -1145,7 +1174,7 @@ function routeHints(stops, tt){
   for(let k=0;k<stops.length-1;k++){
     const a=starts[k] ?? 0, b=(starts[k+1] ?? C.length)-1;
     const L=cum[b]-cum[a];
-    const n= L<4000 ? 0 : Math.min(14, Math.max(1, Math.floor(L/12000)));
+    const n= L<3000 ? 0 : Math.min(40, Math.max(1, Math.floor(L/5000)));
     let j=a;
     for(let h=1;h<=n;h++){
       let target=cum[a]+L*h/(n+1);
@@ -1211,9 +1240,9 @@ function useMyLocationAsStart(){
   else state.start=null;
   invalidate(); renderStops(); renderMarkers(); save();
 }
-async function plan(){
+async function plan(opt={}){
   if(!state.end){ toast("Haritadaki “Varış” ile ya da üstteki arama kutusundan varış noktasını seçin."); return; }
-  if(!state.start || state.start.auto){
+  if(!opt.RT && (!state.start || state.start.auto)){
     let f=live.fix && Date.now()-live.fix.t<120000 ? live.fix : null;
     if(!f){ $("#btnPlan").textContent="Konum alınıyor…"; f=await currentFix(); $("#btnPlan").textContent="Rotayı çiz"; }
     if(!f){ toast("Konumunuz alınamadı. Konum iznini açın ya da haritadaki “Başlangıç” ile bir nokta seçin.",6000); return; }
@@ -1225,7 +1254,8 @@ async function plan(){
   const btn=$("#btnPlan"); btn.disabled=true; btn.textContent="Hesaplanıyor…";
   try{
     const stops=allStops();
-    const RT=await getRoute(stops,start);
+    const RT=opt.RT || await getRoute(stops,start,!ride.active);
+    const alts = opt.RT ? (opt.alts||[]) : (RT.alts||[]);
     const coords=RT.coords, n=coords.length-1, segD=RT.segD, segT=RT.segT;
     const mode=$("#speedMode").value, factor=RT.provider==="tomtom" ? 1 : +$("#traffic").value, vFix=Math.max(10,+$("#fixedSpeed").value||80)/3.6;
     const mv=segT.map((t,i)=> mode==="fixed" ? segD[i]/vFix : t*factor);
@@ -1283,7 +1313,7 @@ async function plan(){
     pts.sort((a,b)=>a.t-b.t);
     pts.forEach(p=>p.eta=new Date(start.getTime()+p.t*1000));
 
-    state.plan={coords, pts, breaks, steps, traffic, startPt:[+stops[0].lat,+stops[0].lon], endPt:[+stops[stops.length-1].lat,+stops[stops.length-1].lon], provider:RT.provider, trafficAt:Date.now(), arr:Array.from(arr), dep:Array.from(dep), cumD:Array.from(cumD), T, moving, dist:totalD, start, end:new Date(start.getTime()+T*1000)};
+    state.plan={coords, pts, breaks, steps, traffic, tt:RT.tt||null, alts, ttT:(RT.tt||RT).summary?.travelTimeInSeconds||null, startPt:[+stops[0].lat,+stops[0].lon], endPt:[+stops[stops.length-1].lat,+stops[stops.length-1].lon], provider:RT.provider, trafficAt:Date.now(), arr:Array.from(arr), dep:Array.from(dep), cumD:Array.from(cumD), T, moving, dist:totalD, start, end:new Date(start.getTime()+T*1000)};
     drawRoute();
     btn.textContent="Hava durumu alınıyor…";
     await fetchWeather();
@@ -1356,6 +1386,16 @@ function drawRoute(){
   const P=state.plan; if(!P) return;
   // mavi, kalın rota: dış kenar + iç çizgi
   const W=ride.active?[17,12]:[7,4];
+  if(!ride.active && P.alts?.length){
+    P.alts.forEach((a,k)=>{
+      MK.polyline(a.coords,{color:isDark()?"#3b4352":"#7d8796",weight:8,opacity:.9}).addTo(routeLayer);
+      MK.polyline(a.coords,{color:isDark()?"#8d97a8":"#b7c0cc",weight:5,opacity:1}).addTo(routeLayer);
+      const lp=altLabelPoint(a.coords,P.coords), dt=Math.round(((a.summary?.travelTimeInSeconds||0)-(P.ttT||0))/60);
+      const km=((a.summary?.lengthInMeters||0)/1000).toFixed(0);
+      const m=MK.marker(lp,{icon:MK.divIcon({html:`<button class="altpin" type="button">${dt>0?"+"+dt+" dk":dt<0?dt+" dk":"aynı süre"}<small>${km} km</small></button>`}),zIndexOffset:250}).addTo(routeLayer);
+      m.el?.addEventListener("click",()=>selectAlt(k));
+    });
+  }
   MK.polyline(P.coords,{color:isDark()?"#08244d":"#1565c0",weight:W[0],opacity:.95}).addTo(routeLayer);
   MK.polyline(P.coords,{color:"#3fa9ff",weight:W[1],opacity:1}).addTo(routeLayer);
   if(!ride.active){
@@ -1374,6 +1414,37 @@ function drawRoute(){
     const c=P.coords[bk.idx];
     MK.marker(c,{icon:MK.divIcon({className:"",html:`<div class="breakpin">Mola</div>`,iconSize:null}),interactive:false}).addTo(routeLayer);
   });
+}
+/* alternatif rotanın ana rotadan en uzak noktası (etiket yeri) */
+function altLabelPoint(A,M){
+  let best=A[Math.floor(A.length/2)], bd=-1;
+  const step=Math.max(1,Math.floor(A.length/60)), mStep=Math.max(1,Math.floor(M.length/400));
+  for(let i=0;i<A.length;i+=step){ let d=Infinity; for(let j=0;j<M.length;j+=mStep){ const x=hav(A[i],M[j]); if(x<d) d=x; } if(d>bd){ bd=d; best=A[i]; } }
+  return best;
+}
+/* haritada dokunulan yer bir alternatif rotanın üstünde mi? */
+function altAt(pt){
+  const P=state.plan; if(!P?.alts?.length || ride.active) return -1;
+  let hit=-1, hd=26;
+  P.alts.forEach((a,k)=>{
+    const C=a.coords, step=Math.max(1,Math.floor(C.length/1500));
+    let q=map.project([C[0][1],C[0][0]]);
+    for(let i=step;i<C.length;i+=step){
+      const r=map.project([C[i][1],C[i][0]]), dx=r.x-q.x, dy=r.y-q.y, L=dx*dx+dy*dy;
+      let t=L>0? ((pt.x-q.x)*dx+(pt.y-q.y)*dy)/L : 0; t=Math.max(0,Math.min(1,t));
+      const d=Math.hypot(q.x+t*dx-pt.x, q.y+t*dy-pt.y); if(d<hd){ hd=d; hit=k; }
+      q=r;
+    }
+  });
+  return hit;
+}
+async function selectAlt(k){
+  const P=state.plan; if(!P?.alts?.[k]) return;
+  const chosen=P.alts[k], others=P.alts.filter((_,i)=>i!==k);
+  if(P.tt) others.push(P.tt);
+  toast("Seçilen rota hazırlanıyor…",1500);
+  const RT=await hybridOf(allStops(), chosen); RT.tt=chosen;
+  await plan({RT, alts:others});
 }
 let wxMarkers=[];
 function popupHtml(p){
@@ -1479,7 +1550,7 @@ function drawChart(){
 }
 
 /* ---------- düğmeler ---------- */
-$("#btnPlan").onclick=plan;
+$("#btnPlan").onclick=()=>plan();
 $("#btnAddVia").onclick=()=>{ if(phoneUI()){ searchOnMap("via",null); return; } setMode("via"); toast("Ara durak için haritaya dokunun ya da arama kutusunu kullanın.");
   if(!document.getElementById("stop-via-new")) renderStopsKeepEmpty(); else document.getElementById("stop-via-new").focus(); };
 function renderStopsKeepEmpty(){
@@ -2178,7 +2249,7 @@ function saveRide(){
   if(!ride.active || ride.sim || !state.plan) return;
   try{
     localStorage.setItem(RIDE_KEY, JSON.stringify({
-      savedAt:Date.now(), plan:state.plan, trail:ride.trail.slice(-1500),
+      savedAt:Date.now(), plan:{...state.plan, tt:null, alts:[]}, trail:ride.trail.slice(-1500),
       stops:{start:state.start,end:state.end,vias:state.vias}
     }));
   }catch{}
