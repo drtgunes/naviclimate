@@ -513,7 +513,7 @@ body.riding .maplibregl-ctrl-top-left,body.riding .maplibregl-ctrl-bottom-right,
       </div>
     </section>
 
-    <p class="foot">Harita: OpenFreeMap, © OpenMapTiles, © OpenStreetMap katkıcıları · Hız kameraları: OpenStreetMap · Rota: OSRM · Hava: Open-Meteo. Tahminler saatliktir; varış saatleri tahmini sürüş hızına dayanır. · <b>Sürüm 32</b></p>
+    <p class="foot">Harita: OpenFreeMap, © OpenMapTiles, © OpenStreetMap katkıcıları · Hız kameraları: OpenStreetMap · Rota: OSRM · Hava: Open-Meteo. Tahminler saatliktir; varış saatleri tahmini sürüş hızına dayanır. · <b>Sürüm 33</b></p>
   </aside>
 
   <main id="mapwrap">
@@ -556,7 +556,7 @@ body.riding .maplibregl-ctrl-top-left,body.riding .maplibregl-ctrl-bottom-right,
           </div>
           <div class="hud-sub"><span id="hudDelay">GPS sinyali bekleniyor…</span><span id="hudGps"></span></div>
           <div class="hud-next" id="hudNext" hidden></div>
-          <div class="hud-attr">© OpenFreeMap · © OpenMapTiles · © OpenStreetMap · v32</div>
+          <div class="hud-attr">© OpenFreeMap · © OpenMapTiles · © OpenStreetMap · v33</div>
         </div>
         <div class="hud-actions">
           <button class="fab orient" type="button" id="btnOrient" hidden>3D</button>
@@ -633,7 +633,7 @@ function placeName(res){
   return a.town || a.city || a.village || a.municipality || a.county || a.suburb || a.province || a.state || res.name || "Konum";
 }
 /* ---------- durum ---------- */
-const state = { start:null, end:null, vias:[], mode:"start", plan:null };
+const state = { start:null, end:null, vias:[], mode:"end", plan:null };
 
 function save(){
   try{
@@ -912,7 +912,7 @@ function bestViaIndex(p){
 
 async function placeAt(lat, lon, mode){
   const p={lat:+lat.toFixed(6), lon:+lon.toFixed(6), name:"…"};
-  if(mode==="start"){ state.start=p; if(!state.end) setMode("end"); }
+  if(mode==="start"){ state.start=p; setMode("end"); }
   else if(mode==="end"){ state.end=p; }
   else { state.vias.splice(bestViaIndex(p),0,p); }
   renderStops(); renderMarkers(); invalidate();
@@ -1200,10 +1200,25 @@ const trafColor=s=> s.mag>=3 ? "#e5322d" : "#f5b301";
 const trafName=s=> s.mag>=3 ? "Yoğun trafik" : "Sıkışık trafik";
 
 /* ---------- planlama ---------- */
+function currentFix(){
+  return new Promise(res=>{
+    if(!("geolocation" in navigator)) return res(null);
+    navigator.geolocation.getCurrentPosition(p=>res({lat:p.coords.latitude, lon:p.coords.longitude, t:Date.now()}), ()=>res(null), {enableHighAccuracy:true, maximumAge:30000, timeout:12000});
+  });
+}
+function useMyLocationAsStart(){
+  if(live.fix) state.start={lat:+live.fix.lat.toFixed(6), lon:+live.fix.lon.toFixed(6), name:"Konumum", auto:true};
+  else state.start=null;
+  invalidate(); renderStops(); renderMarkers(); save();
+}
 async function plan(){
-  if(!state.start){ toast("Konumunuz henüz alınamadı. Haritadaki “Başlangıç” ile bir nokta seçebilirsiniz."); return; }
   if(!state.end){ toast("Haritadaki “Varış” ile ya da üstteki arama kutusundan varış noktasını seçin."); return; }
-  if(state.start.auto && live.fix){ state.start={lat:+live.fix.lat.toFixed(6), lon:+live.fix.lon.toFixed(6), name:"Konumum", auto:true}; renderStops(); renderMarkers(); }
+  if(!state.start || state.start.auto){
+    let f=live.fix && Date.now()-live.fix.t<120000 ? live.fix : null;
+    if(!f){ $("#btnPlan").textContent="Konum alınıyor…"; f=await currentFix(); $("#btnPlan").textContent="Rotayı çiz"; }
+    if(!f){ toast("Konumunuz alınamadı. Konum iznini açın ya da haritadaki “Başlangıç” ile bir nokta seçin.",6000); return; }
+    state.start={lat:+f.lat.toFixed(6), lon:+f.lon.toFixed(6), name:"Konumum", auto:true}; renderStops(); renderMarkers();
+  }
   const startVal=$("#startTime").value;
   const start=parseLocal(startVal);
   if(!startVal || !start){ toast("Lütfen yola çıkış tarih ve saatini girin."); $("#startTime").focus(); return; }
@@ -1484,7 +1499,7 @@ function renderStopsKeepEmpty(){
   inp.focus();
 }
 $("#btnClear").onclick=()=>{ state.start=null; state.end=null; state.vias=[]; invalidate(); routeLayer.clearLayers(); wxLayer.clearLayers();
-  $("#resBody").hidden=true; $("#emptyRes").hidden=false; renderStops(); renderMarkers(); setMode("start"); save(); };
+  $("#resBody").hidden=true; $("#emptyRes").hidden=false; renderStops(); renderMarkers(); setMode("end"); useMyLocationAsStart(); save(); };
 $("#btnFit").onclick=()=>{ if(state.plan) fitTo(state.plan.coords); else fitStops(); };
 $("#btnExample").onclick=()=>{
   state.start={lat:41.0082,lon:28.9784,name:"İstanbul"};
@@ -2422,6 +2437,9 @@ function onLiveFix(pos){
   if(c.heading!=null && !isNaN(c.heading) && live.v>1.5) live.hd=c.heading;
   else if(live.fix && hav([live.fix.lat,live.fix.lon],[lat,lon])>10) live.hd=bearing([live.fix.lat,live.fix.lon],[lat,lon]);
   live.fix={lat,lon,t:pos.timestamp||Date.now()};
+  if(!live.first && !state.plan && (!state.start || state.start.auto) && (!state.start || hav([state.start.lat,state.start.lon],[lat,lon])>25)){
+    state.start={lat:+lat.toFixed(6), lon:+lon.toFixed(6), name:"Konumum", auto:true}; renderStops(); renderMarkers();
+  }
   // yola oturt (hızlı ve hareket halindeyken ya da yola çok yakınken)
   const sn=snapToRoads(lat,lon,acc,live.v>1.5?live.hd:null);
   live.road=sn; live.target=sn? {lat:sn.lat,lon:sn.lon} : {lat,lon}; live.fixPerf=performance.now();
@@ -2472,6 +2490,7 @@ map.on("movestart",e=>{ if(!ride.active && e.originalEvent) live.follow=false; }
 $("#btnLocate").onclick=()=>{
   if(!("geolocation" in navigator)){ toast("Tarayıcınız konum vermiyor."); return; }
   live.follow=true; liveStart();
+  if(state.mode==="start" && state.start && !state.start.auto){ useMyLocationAsStart(); setMode("end"); toast("Başlangıç yeniden konumunuz oldu."); return; }
   if(state.plan) toast("Konumunuz takip ediliyor. Rotayı görmek için “Rotaya odakla”ya dokunun.");
   live.camZoom=null;
 };
@@ -2491,7 +2510,7 @@ function tempColor(t){ return t<=0?"#1d4ed8" : t<=8?"#0e7490" : t<=16?"#15803d" 
 (function init(){
   const d=new Date(); d.setSeconds(0,0); d.setMinutes(Math.ceil(d.getMinutes()/5)*5);   // varsayılan: şimdi
   $("#startTime").value=localInputValue(d);
-  load(); syncSettings(); renderStops(); renderMarkers(); checkSavedRide();
+  load(); syncSettings(); setMode("end"); renderStops(); renderMarkers(); checkSavedRide();
   if(state.start && !state.start.auto || state.end) fitStops();
   syncActionBar();
   liveStart();                                   // canlı modda aç
